@@ -1,10 +1,10 @@
-import tensorflow as tf
-import tensorflow.contrib.slim as slim
+import tensorflow.compat.v1 as tf
 from sacred import Ingredient
 
 from gnnbench.data.preprocess import row_normalize
-from gnnbench.models.base_model import GNNModel
+from gnnbench.models.base_model import GNNModel, l2_regularizer, bias_add
 from gnnbench.util import to_sparse_tensor
+
 
 
 class LogisticRegression(GNNModel):
@@ -23,9 +23,9 @@ class LogisticRegression(GNNModel):
             weights = tf.get_variable("weights", [int(self.features.get_shape()[1]), self.targets.shape[1]],
                                       dtype=tf.float32,
                                       initializer=tf.glorot_uniform_initializer(),
-                                      regularizer=slim.l2_regularizer(self.weight_decay))
+                                      regularizer=l2_regularizer(self.weight_decay))
             output = tf.sparse_tensor_dense_matmul(self.features, weights)
-            output = tf.contrib.layers.bias_add(output)
+            output = bias_add(output, "logregr")
 
         with tf.name_scope('extract_relevant_nodes'):
             return tf.gather(output, self.nodes_to_consider)

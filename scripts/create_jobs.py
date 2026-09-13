@@ -1,18 +1,19 @@
 import argparse
+import json
 
 import numpy as np
 import yaml
 
-from gnnbench.util import get_pending_collection, generate_random_parameter_settings, get_experiment_config
+from gnnbench.util import get_pending_connection, generate_random_parameter_settings, get_experiment_config
 
 
-def generate_configs(pending, fixed, experiment_config):
+def generate_configs(conn, fixed, experiment_config):
     with open(experiment_config["default_config"]) as conf:
-        train_config = yaml.load(conf)
+        train_config = yaml.safe_load(conf)
 
     for model_config_path in experiment_config['models']:
         with open(model_config_path) as conf:
-            model_config = yaml.load(conf)
+            model_config = yaml.safe_load(conf)
 
         if fixed:
             param_sweep = [(experiment_config['experiment_name'], {})]
@@ -27,7 +28,7 @@ def generate_configs(pending, fixed, experiment_config):
                 setting = {param: random_parameter_settings[param][i] for param in random_parameter_settings}
                 param_sweep.append((f"{experiment_config['experiment_name']}-search{i}", setting))
 
-        insert_configs(pending, param_sweep,
+        insert_configs(conn, param_sweep,
                        train_config=train_config, model_config=model_config, experiment_config=experiment_config)
 
 
@@ -59,14 +60,13 @@ def generate_multiple_splits(num_different_splits, experiment_name, model_name, 
             "seed": int(experiment_seeds[split_no]),
             "train_config": train_config,
             "model_config": model_config,
-            "target_db_name": experiment_config["target_db_name"],
             "metrics": experiment_config["metrics"]
         }
 
     } for split_no in range(num_different_splits)]
 
 
-def insert_configs(pending, param_sweep, train_config, model_config, experiment_config):
+def insert_configs(conn, param_sweep, train_config, model_config, experiment_config):
     splits = []
     for dataset_path in experiment_config['datasets']:
         for experiment_name, config in param_sweep:
@@ -76,40 +76,47 @@ def insert_configs(pending, param_sweep, train_config, model_config, experiment_
                                                train_config, model_config, experiment_config)
 
     print(f"Inserting {len(splits)} configs for model {model_config['model_name']} into pending list.")
-    pending.insert_many(splits)
+    conn.executemany(
+        "INSERT INTO pending (running, config) VALUES (0, ?)",
+        [(json.dumps(split),) for split in splits]
+    )
+    conn.commit()
     print("Done inserting configs.")
 
 
 def load_search_config(searchspace_path):
     with open(searchspace_path, "r") as f:
-        return yaml.load(f)
+        return yaml.safe_load(f)
 
 
-def report_pending_status(pending):
-    count = pending.count()
-    running = pending.find({"running": True})
-    print(f"{count} entries in database, {running.count()} running.")
+def report_pending_status(conn):
+    count = conn.execute("SELECT COUNT(*) FROM pending").fetchone()[0]
+    running = conn.execute("SELECT COUNT(*) FROM pending WHERE running = 1").fetchone()[0]
+    print(f"{count} entries in database, {running} running.")
 
 
-def reset_running_status(pending):
+def reset_running_status(conn):
     print("Setting 'running' to False for all configs in database.")
 
-    if pending.count() <= 0:
+    count = conn.execute("SELECT COUNT(*) FROM pending").fetchone()[0]
+    if count <= 0:
         print("No pending jobs. Exiting...")
         return
 
-    pending.update_many({}, {"$set": {"running": False}}, upsert=False)
+    conn.execute("UPDATE pending SET running = 0")
+    conn.commit()
 
 
-def clear_pending_configs(pending):
+def clear_pending_configs(conn):
     print("Removing all pending configurations from database.")
-    pending.delete_many({})
+    conn.execute("DELETE FROM pending")
+    conn.commit()
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Create jobs for the given experiment. '
-                                     'Each job is represented as a record in the "pending" database. '
-                                     'See README.md for more details.',
+                                     'Each job is represented as a record in the "pending" table of the SQLite '
+                                     'database. See README.md for more details.',
                                      formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument('--op',
                         required=True,
@@ -130,23 +137,26 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     _experiment_config = get_experiment_config(args.config_file)
-    _pending = get_pending_collection(_experiment_config['db_host'], _experiment_config['db_port'])
+    _conn = get_pending_connection(_experiment_config['db_path'])
 
-    if args.op == "fixed":
-        if _experiment_config['experiment_mode'] != 'fixed_configurations':
-            raise ValueError(f'The "experiment_mode" must be set to "fixed_configurations"'
-                             'in {args.config_file} when using the "--op fixed" option')
-        generate_configs(_pending, fixed=True, experiment_config=_experiment_config)
-    elif args.op == "search":
-        if _experiment_config['experiment_mode'] != 'hyperparameter_search':
-            raise ValueError(f'The "experiment_mode" must be set to "hyperparameter_search"'
-                             'in {args.config_file} when using the "--op search" option')
-        generate_configs(_pending, fixed=False, experiment_config=_experiment_config)
-    elif args.op == "status":
-        report_pending_status(_pending)
-    elif args.op == "reset":
-        reset_running_status(_pending)
-    elif args.op == "clear":
-        clear_pending_configs(_pending)
-    else:
-        raise ValueError("Undefined operation!")
+    try:
+        if args.op == "fixed":
+            if _experiment_config['experiment_mode'] != 'fixed_configurations':
+                raise ValueError(f'The "experiment_mode" must be set to "fixed_configurations"'
+                                 'in {args.config_file} when using the "--op fixed" option')
+            generate_configs(_conn, fixed=True, experiment_config=_experiment_config)
+        elif args.op == "search":
+            if _experiment_config['experiment_mode'] != 'hyperparameter_search':
+                raise ValueError(f'The "experiment_mode" must be set to "hyperparameter_search"'
+                                 'in {args.config_file} when using the "--op search" option')
+            generate_configs(_conn, fixed=False, experiment_config=_experiment_config)
+        elif args.op == "status":
+            report_pending_status(_conn)
+        elif args.op == "reset":
+            reset_running_status(_conn)
+        elif args.op == "clear":
+            clear_pending_configs(_conn)
+        else:
+            raise ValueError("Undefined operation!")
+    finally:
+        _conn.close()

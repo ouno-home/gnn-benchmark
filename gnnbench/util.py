@@ -1,8 +1,12 @@
+import json
+import sqlite3
+
 import numpy as np
 import scipy.sparse as sp
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 import yaml
-from pymongo import MongoClient
+
+tf.disable_v2_behavior()
 
 
 def to_sparse_tensor(M, value=False):
@@ -47,16 +51,10 @@ def dropout_supporting_sparse_tensors(X, keep_prob):
     Author: Oleksandr Shchur & Johannes Klicpera
     """
     if isinstance(X, tf.SparseTensor):
-        # nnz = X.values.shape  # number of nonzero entries
-        # random_tensor = keep_prob
-        # random_tensor += tf.random_uniform(nnz)
-        # dropout_mask = tf.cast(tf.floor(random_tensor), dtype=tf.bool)
-        # pre_out = tf.sparse_retain(X, dropout_mask)
-        # return pre_out * (1.0 / keep_prob)
-        values_after_dropout = tf.nn.dropout(X.values, keep_prob)
+        values_after_dropout = tf.nn.dropout(X.values, rate=1 - keep_prob)
         return tf.SparseTensor(X.indices, values_after_dropout, X.dense_shape)
     else:
-        return tf.nn.dropout(X, keep_prob)
+        return tf.nn.dropout(X, rate=1 - keep_prob)
 
 
 def scatter_add_tensor(tensor, indices, out_shape, name=None):
@@ -77,7 +75,6 @@ def scatter_add_tensor(tensor, indices, out_shape, name=None):
         indices = tf.expand_dims(indices, -1)
         # the scatter_nd function adds up values for duplicate indices what is exactly what we want
         return tf.scatter_nd(indices, tensor, out_shape, name=scope)
-
 
 def uniform_float(random_state, lower, upper, number, log_scale=False):
     """Author: Oleksandr Shchur"""
@@ -139,18 +136,74 @@ def generate_random_parameter_settings(search_spaces_dict, num_experiments, seed
 
 def get_mongo_config(config_path):
     with open(config_path, 'r') as conf:
-        config = yaml.load(conf)
-    return config['db_host'], config['db_port']
+        config = yaml.safe_load(conf)
+    return config['db_path']
 
 
 def get_experiment_config(config_path):
     with open(config_path, 'r') as conf:
-        return yaml.load(conf)
+        return yaml.safe_load(conf)
 
 
-def get_pending_collection(db_host, db_port):
-    client = MongoClient(f"mongodb://{db_host}:{db_port}/pending")
-    return client["pending"].pending
+def get_pending_connection(db_path):
+    """Open a connection to the SQLite database holding the pending-jobs queue.
+
+    The `pending` table is created automatically if it does not exist yet.
+
+    Parameters
+    ----------
+    db_path : str
+        Path to the SQLite database file (e.g. from the experiment config's `db_path` entry).
+
+    Returns
+    -------
+    conn : sqlite3.Connection
+        Connection to the database. The caller is responsible for closing it.
+    """
+    conn = sqlite3.connect(db_path, timeout=60)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS pending (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            running INTEGER NOT NULL DEFAULT 0,
+            config TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+    return conn
+
+
+def fetch_pending_job(conn):
+    """Atomically claim the next pending job.
+
+    Uses BEGIN IMMEDIATE so that only one worker can claim a job at a time,
+    mirroring the atomic find_one_and_update of the previous MongoDB backend.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Connection returned by get_pending_connection.
+
+    Returns
+    -------
+    job : dict or None
+        The claimed job record {"id": ..., "config": {...}}, or None if the queue is empty.
+    """
+    cur = conn.cursor()
+    cur.execute("BEGIN IMMEDIATE")
+    try:
+        cur.execute("SELECT id, config FROM pending WHERE running = 0 ORDER BY id LIMIT 1")
+        row = cur.fetchone()
+        if row is None:
+            conn.commit()
+            return None
+        cur.execute("UPDATE pending SET running = 1 WHERE id = ?", (row["id"],))
+        conn.commit()
+        return {"id": row["id"], "config": json.loads(row["config"])}
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def is_binary_bag_of_words(features):

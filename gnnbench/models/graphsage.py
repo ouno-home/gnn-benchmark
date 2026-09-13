@@ -1,11 +1,11 @@
 import numpy as np
-import tensorflow as tf
-import tensorflow.contrib.slim as slim
+import tensorflow.compat.v1 as tf
 from sacred import Ingredient
 
 from gnnbench.data.preprocess import row_normalize, add_self_loops
-from gnnbench.models.base_model import GNNModel
+from gnnbench.models.base_model import GNNModel, l2_regularizer, bias_add
 from gnnbench.util import to_sparse_tensor, scatter_add_tensor, dropout_supporting_sparse_tensors
+
 
 
 def aggregate_mean(transformed_features, graph_adj, degrees, name):
@@ -97,7 +97,7 @@ def sage_layer(features, output_dim, graph_adj, adj_with_self_loops_indices, deg
                                           shape=[num_features, output_dim],
                                           dtype=tf.float32,
                                           initializer=tf.glorot_uniform_initializer(),
-                                          regularizer=slim.l2_regularizer(weight_decay)
+                                          regularizer=l2_regularizer(weight_decay)
                                           )
             if isinstance(features, tf.SparseTensor):
                 transformed_features = tf.sparse_tensor_dense_matmul(features, agg_weights)
@@ -122,7 +122,7 @@ def sage_layer(features, output_dim, graph_adj, adj_with_self_loops_indices, deg
                                           shape=[int(aggregated.get_shape()[1]), output_dim],
                                           dtype=tf.float32,
                                           initializer=tf.glorot_uniform_initializer(),
-                                          regularizer=slim.l2_regularizer(weight_decay)
+                                          regularizer=l2_regularizer(weight_decay)
                                           )
             # dims: num_nodes x aggregated_feature_size, aggregated_feature_size x output_dim -> num_nodes x output_dim
             agg_features = tf.matmul(aggregated, agg_weights)
@@ -138,7 +138,7 @@ def sage_layer(features, output_dim, graph_adj, adj_with_self_loops_indices, deg
                                                 shape=[num_features, output_dim],
                                                 dtype=tf.float32,
                                                 initializer=tf.glorot_uniform_initializer(),
-                                                regularizer=slim.l2_regularizer(weight_decay)
+                                                regularizer=l2_regularizer(weight_decay)
                                                 )
             # dims: num_nodes x num_features, num_features x output_dim -> num_nodes x output_dim
             if isinstance(features, tf.SparseTensor):
@@ -148,7 +148,7 @@ def sage_layer(features, output_dim, graph_adj, adj_with_self_loops_indices, deg
 
             output = agg_features + skip_features
 
-        output = tf.contrib.layers.bias_add(output)
+        output = bias_add(output, name)
 
         # This normalization strongly improves performance. It is introduced in the original algorithm from the paper.
         # The value clipping of the normalization constant is taken from
@@ -242,7 +242,7 @@ class GraphSAGE(GNNModel):
         else:
             # extract the coordinates of all the edges
             # since both row and column coordinates are ordered, row[0] corresponds to col[0] etc.
-            self.adj_with_self_loops_indices = np.mat([adj_with_self_loops_coo.row, adj_with_self_loops_coo.col])
+            self.adj_with_self_loops_indices = np.asmatrix([adj_with_self_loops_coo.row, adj_with_self_loops_coo.col])
         return adj_with_self_loops_tensor
 
 

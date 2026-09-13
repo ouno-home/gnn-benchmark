@@ -1,12 +1,12 @@
-import tensorflow as tf
-import tensorflow.contrib.slim as slim
+import tensorflow.compat.v1 as tf
 from sacred import Ingredient
 
 from gnnbench.data.preprocess import row_normalize, renormalize_adj
-from gnnbench.models.base_model import GNNModel
+from gnnbench.models.base_model import GNNModel, l2_regularizer
 from gnnbench.util import dropout_supporting_sparse_tensors, to_sparse_tensor
 
 # implementation verified against Kipf data
+
 
 
 def graph_convolution(inputs, sparse_renormalized_laplacian, weights, input_is_sparse=False):
@@ -33,7 +33,7 @@ def graph_convolution_layer(output_dim,
         input_dim = int(inputs.get_shape()[1])
         weights = tf.get_variable("%s-weights" % name, [input_dim, output_dim], dtype=tf.float32,
                                   initializer=tf.glorot_uniform_initializer(),
-                                  regularizer=slim.l2_regularizer(weight_decay))
+                                  regularizer=l2_regularizer(weight_decay))
         bias = tf.get_variable("%s-bias" % name, [output_dim], dtype=tf.float32,
                                initializer=tf.zeros_initializer())
 

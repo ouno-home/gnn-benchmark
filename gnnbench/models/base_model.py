@@ -1,8 +1,34 @@
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+
+tf.disable_v2_behavior()
 
 __all__ = [
     'GNNModel',
 ]
+
+
+def l2_regularizer(scale):
+    """L2 regularizer compatible with TF1-style ref variables.
+
+    tf.keras.regularizers.l2 chokes on the float32_ref dtype of TF1 variables,
+    so implement the penalty directly on the graph.
+    """
+    def regularizer(x):
+        return scale * tf.nn.l2_loss(x)
+
+    return regularizer
+
+
+def bias_add(inputs, name):
+    """Add a learnable bias to the inputs (replacement for slim.layers.bias_add).
+
+    Creates a zero-initialized bias variable scoped under `name` and adds it to
+    every row of `inputs`.
+    """
+    output_dim = int(inputs.get_shape()[1])
+    bias = tf.get_variable(f"{name}-bias", [output_dim], dtype=tf.float32,
+                           initializer=tf.zeros_initializer())
+    return tf.nn.bias_add(inputs, bias)
 
 
 class GNNModel(object):

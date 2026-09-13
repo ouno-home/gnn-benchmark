@@ -1,7 +1,8 @@
 import argparse
+import json
 
 import pandas as pd
-import pymongo
+import sqlalchemy
 
 from gnnbench.util import get_experiment_config
 
@@ -18,33 +19,38 @@ SEARCH_PARAM_COLUMNS = [
     'return_prob'
 ]
 
+METRICS_MODES = ["train", "val", "test"]
+
 
 def get_metrics_column_names(experiment_config):
-    return [f"{mode}.{metric}" for metric in experiment_config["metrics"] for mode in ["train", "val", "test"]]
+    return [f"{mode}.{metric}" for metric in experiment_config["metrics"] for mode in METRICS_MODES]
 
 
-def fetch_results_as_df(runs, metrics_columns):
+def fetch_results_as_df(engine, metrics_columns):
     results_list = []
-    for record in runs.find():
+    with engine.connect() as connection:
+        runs = pd.read_sql_table('run', connection)
+        experiments = pd.read_sql_table('experiment', connection)
+    runs = runs.merge(experiments[['experiment_id', 'name']], on='experiment_id', how='left')
+    for _, record in runs.iterrows():
         try:
-            if 'result' in record or 'config' in record:
-                config = record['config']
-                result = record['result']
-                num_training_runs = config['num_training_runs']
-                for run_no in range(num_training_runs):
+            config = json.loads(record['config'])
+            result = json.loads(record['info']) if record['info'] else {}
+            num_training_runs = config['num_training_runs']
+            for run_no in range(num_training_runs):
 
-                    row = {'experiment-name': record['experiment']['name'], 'run_no': run_no}
-                    row.update(unfold_dict_recursively(config, run_no, num_training_runs))
-                    row.update(unfold_dict_recursively(result, run_no, num_training_runs))
+                row = {'experiment-name': record['name'], 'run_no': run_no}
+                row.update(unfold_dict_recursively(config, run_no, num_training_runs))
+                row.update(unfold_dict_recursively(result, run_no, num_training_runs))
 
-                    # make sure all required columns are in row
-                    for column in SEARCH_PARAM_COLUMNS + metrics_columns:
-                        if column not in row:
-                            row[column] = None
-                    results_list.append(row)
+                # make sure all required columns are in row
+                for column in SEARCH_PARAM_COLUMNS + metrics_columns:
+                    if column not in row:
+                        row[column] = None
+                results_list.append(row)
 
         except Exception as e:
-            print(e, record['experiment']['name'])
+            print(e, record['name'])
             pass
 
     return pd.DataFrame(results_list)
@@ -95,9 +101,12 @@ def evaluate_search(results_df, metrics_columns):
     return output_table
 
 
-def clear_results(runs):
+def clear_results(engine):
     print("Removing all results from database.")
-    runs.delete_many({})
+    with engine.connect() as connection:
+        connection.execute(sqlalchemy.text("DELETE FROM metric"))
+        connection.execute(sqlalchemy.text("DELETE FROM run"))
+        connection.commit()
 
 
 if __name__ == '__main__':
@@ -118,20 +127,15 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     _experiment_config = get_experiment_config(args.config_file)
-    _db_host = _experiment_config['db_host']
-    _db_port = _experiment_config['db_port']
-    _db_name = _experiment_config['target_db_name']
-
-    # Get results from the database
-    client = pymongo.MongoClient(f"mongodb://{_db_host}:{_db_port}/{_db_name}")
-    _runs = client[_db_name].runs
+    _db_path = _experiment_config['db_path']
+    _engine = sqlalchemy.create_engine(f"sqlite:///{_db_path}")
     _metrics_columns = get_metrics_column_names(_experiment_config)
 
     # clear database if demanded
     if args.clear:
-        choice = input(f'Are you sure that you want to delete all records in {_db_name}? [y/N] ').lower()
+        choice = input(f'Are you sure that you want to delete all records in {_db_path}? [y/N] ').lower()
         if choice == 'y' or choice == 'yes':
-            clear_results(_runs)
+            clear_results(_engine)
         else:
             print('Aborting.')
             pass
@@ -139,13 +143,13 @@ if __name__ == '__main__':
 
     # Aggregate results into a DataFrame
     if _experiment_config['experiment_mode'] == 'hyperparameter_search':
-        df = fetch_results_as_df(_runs, _metrics_columns)
+        df = fetch_results_as_df(_engine, _metrics_columns)
         if df.empty:
             raise ValueError("The database contains no records.")
         final_metrics = evaluate_search(df, _metrics_columns)
         print(final_metrics.to_string())
     elif _experiment_config['experiment_mode'] == 'fixed_configurations':
-        df = fetch_results_as_df(_runs, _metrics_columns)
+        df = fetch_results_as_df(_engine, _metrics_columns)
         if df.empty:
             raise ValueError("The database contains no records.")
         final_metrics = compute_final_metrics(df, _metrics_columns)

@@ -5,11 +5,13 @@ The framework provides a simple interface for running different models on severa
 In addition, the framework allows to automatically perform hyperparameter tuning for all the models using random search.
 
 This framework uses [Sacred] as a backend for keeping track of experimental results, and all the GNN models are implemented in [TensorFlow].
-The current version only supports training models on GPUs.
-This package was tested on Ubuntu 16.04 LTS with Python 3.6.6.
+Experiments are tracked in a local [SQLite] database (no external database server is required).
+The framework can run workers on GPUs or on CPU (pass no `--gpu` flag to `spawn_worker.py`).
+This package was originally tested on Ubuntu 16.04 LTS with Python 3.6.6; the current version runs on modern Python (3.11+) with TensorFlow 2.x (used in `tf.compat.v1` mode).
 
 [TensorFlow]: https://www.tensorflow.org
 [Sacred]: https://github.com/IDSIA/sacred
+[SQLite]: https://www.sqlite.org
 
 
 ## Table of contents
@@ -30,13 +32,7 @@ This package was tested on Ubuntu 16.04 LTS with Python 3.6.6.
 6. [Cite](#cite)
 
 ## Installation
-1. Install [MongoDB]. The implementation was tested with MongoDB `3.6.4`.
-
-    This framework will automatically create a database called `pending` and databases with the
-    names provided in the [experiment configuration files](#configuring-experiments).
-    Make sure these databases do not exist or are empty before running your experiments.
-
-2. Install Python dependencies from the [requirements.txt](requirements.txt) file.
+1. Install Python dependencies from the [requirements.txt](requirements.txt) file.
 When using [conda] this can be done as
     ```bash
     cd gnn-benchmark/
@@ -49,12 +45,11 @@ When using [conda] this can be done as
     ```
 
 
-3. Install the `gnnbench` package
+2. Install the `gnnbench` package
     ```bash
     pip install -e .  # has to be run in the directory with setup.py file, i.e. in gnn-benchmark/
     ```
 
-[MongoDB]: https://www.mongodb.com
 [conda]: https://conda.io/docs
 
 ## Running experiments with `gnnbench`
@@ -65,7 +60,7 @@ Performing experiments with `gnnbench` consists of four steps:
 2. [**Create jobs.**](#creating-jobs)
 Based on the configuration files defined in the previous step,
 a list of jobs to be performed is created and saved to the database.
-Each job is represented as a record in the MongoDB database.
+Each job is represented as a record in the `pending` table of the SQLite database.
 3. [**Spawn worker threads.**](#running-jobs)
 Each thread retrieves one job from the database at a time and runs it.
 4. [**Retrieve results.**](#retrieving-and-aggregating-the-results)
@@ -105,7 +100,7 @@ See [hyperparameter_search.conf.yaml](config/hyperparameter_search.conf.yaml) fo
 
 
 ### Creating jobs
-Use the [scripts/create_jobs.py](scripts/create_jobs.py) script to generate jobs (represented by records in the `pending` database) based on the YAML configuration file.
+Use the [scripts/create_jobs.py](scripts/create_jobs.py) script to generate jobs (represented by records in the `pending` table of the SQLite database given by `db_path` in the experiment config) based on the YAML configuration file.
 The script should be called as
 ```bash
 python create_jobs.py -c CONFIG_FILE --op {fixed,search,status,clear,reset}
@@ -135,6 +130,11 @@ python scripts/spawn_worker.py -c configs/fixed_configs.conf.yaml --gpu 0
 ```
 You can run experiments on multiple GPUs in parallel by spawning multiple workers (e.g. using separate [tmux](https://github.com/tmux/tmux) sessions or panes) and passing different values for the `--gpu` parameter.
 In theory, it should be possible to run multiple workers on a single GPU, but we haven't tested that and cannot guarantee that it will work.
+
+To run a worker on CPU instead of a GPU, omit the `--gpu` parameter (this requires the CPU version of TensorFlow):
+```bash
+python scripts/spawn_worker.py -c configs/fixed_configs.conf.yaml
+```
 
 ### Retrieving and aggregating the results
 Use the [scripts/aggregate_results.py](scripts/aggregate_results.py) script to retrieve results from the database and aggregate them.

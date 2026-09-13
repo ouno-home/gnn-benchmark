@@ -6,7 +6,9 @@ import sys
 import networkx as nx
 import numpy as np
 import scipy.sparse as sp
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+
+tf.disable_v2_behavior()
 
 from gnnbench.data.io import load_dataset
 from gnnbench.data.preprocess import to_binary_bag_of_words, remove_underrepresented_classes, \

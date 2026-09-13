@@ -1,14 +1,14 @@
 import numpy as np
-import tensorflow as tf
-import tensorflow.contrib.slim as slim
+import tensorflow.compat.v1 as tf
 from sacred import Ingredient
 
 from gnnbench.data.preprocess import row_normalize, add_self_loops
-from gnnbench.models.base_model import GNNModel
+from gnnbench.models.base_model import GNNModel, l2_regularizer
 from gnnbench.util import to_sparse_tensor, dropout_supporting_sparse_tensors, scatter_add_tensor
 
 GAUSSIAN_WEIGHTS = "gaussian_weights"
 FILTER_WEIGHTS = "filter_weights"
+
 
 
 # dims:
@@ -82,7 +82,7 @@ def gaussian_kernel(inputs, output_dim, transformed_coordinates, graph_adj, adj_
             f"{name}-linear_transform_weights",
             [input_dim, output_dim], dtype=tf.float32,
             initializer=tf.glorot_uniform_initializer(),
-            regularizer=slim.l2_regularizer(weight_decay)
+            regularizer=l2_regularizer(weight_decay)
         )
         tf.add_to_collection(FILTER_WEIGHTS, linear_transform_weights)
 
@@ -157,10 +157,11 @@ class MoNet(GNNModel):
             tf.add_to_collection(GAUSSIAN_WEIGHTS, coordinate_transform_weights)
             # dims: num_edges x 2, 2 x r -> num_edges x r
             transformed_coordinates = tf.matmul(self.coordinates, coordinate_transform_weights)
-            transformed_coordinates = tf.contrib.layers.bias_add(transformed_coordinates,
-                                                                 variables_collections=[tf.GraphKeys.GLOBAL_VARIABLES,
-                                                                                        tf.GraphKeys.VARIABLES,
-                                                                                        GAUSSIAN_WEIGHTS])
+            coordinate_transform_bias = tf.get_variable("coordinate_transform_bias",
+                                                        [self.r], dtype=tf.float32,
+                                                        initializer=tf.zeros_initializer())
+            tf.add_to_collection(GAUSSIAN_WEIGHTS, coordinate_transform_bias)
+            transformed_coordinates = tf.nn.bias_add(transformed_coordinates, coordinate_transform_bias)
             transformed_coordinates = tf.nn.tanh(transformed_coordinates)
 
             x = self.features

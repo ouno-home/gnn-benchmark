@@ -1,10 +1,11 @@
-import tensorflow as tf
-import tensorflow.contrib.slim as slim
+import tensorflow.compat.v1 as tf
 from sacred import Ingredient
 
 from gnnbench.data.preprocess import row_normalize
-from gnnbench.models.base_model import GNNModel
+from gnnbench.models.base_model import GNNModel, l2_regularizer, bias_add
 from gnnbench.util import dropout_supporting_sparse_tensors, to_sparse_tensor
+
+
 
 
 def fully_connected_layer(inputs, output_dim, activation_fn, dropout_prob, weight_decay, name):
@@ -12,7 +13,7 @@ def fully_connected_layer(inputs, output_dim, activation_fn, dropout_prob, weigh
         input_dim = int(inputs.get_shape()[1])
         weights = tf.get_variable("%s-weights" % name, [input_dim, output_dim], dtype=tf.float32,
                                   initializer=tf.glorot_uniform_initializer(),
-                                  regularizer=slim.l2_regularizer(weight_decay))
+                                  regularizer=l2_regularizer(weight_decay))
 
         # Apply dropout to inputs if required
         inputs = tf.cond(
@@ -25,7 +26,7 @@ def fully_connected_layer(inputs, output_dim, activation_fn, dropout_prob, weigh
             output = tf.sparse_tensor_dense_matmul(inputs, weights)
         else:
             output = tf.matmul(inputs, weights)
-        output = tf.contrib.layers.bias_add(output)
+        output = bias_add(output, name)
         return activation_fn(output) if activation_fn else output
 
 

@@ -1,16 +1,16 @@
 """Code in this file is inspired by Velickovic et al. - Graph Attention Networks
 and Master's Thesis of Johannes Klicpera (TUM, KDD)."""
 import numpy as np
-import tensorflow as tf
-import tensorflow.contrib.slim as slim
+import tensorflow.compat.v1 as tf
 from sacred import Ingredient
 
 from gnnbench.data.preprocess import row_normalize, add_self_loops
-from gnnbench.models.base_model import GNNModel
+from gnnbench.models.base_model import GNNModel, l2_regularizer, bias_add
 from gnnbench.util import dropout_supporting_sparse_tensors, to_sparse_tensor
 
 ATTENTION_WEIGHTS = "attention_weights"
 FILTER_WEIGHTS = "filter_weights"
+
 
 
 def attention_mechanism(features, graph_adj, adj_with_self_loops_indices, coefficient_dropout_prob, weight_decay, name):
@@ -18,19 +18,19 @@ def attention_mechanism(features, graph_adj, adj_with_self_loops_indices, coeffi
     input_dim = int(features.get_shape()[1])
     a_i = tf.get_variable(f"{name}-att_i", [input_dim, 1], dtype=tf.float32,
                           initializer=tf.glorot_uniform_initializer(),
-                          regularizer=slim.l2_regularizer(weight_decay))
+                          regularizer=l2_regularizer(weight_decay))
     a_j = tf.get_variable(f"{name}-att_j", [input_dim, 1], dtype=tf.float32,
                           initializer=tf.glorot_uniform_initializer(),
-                          regularizer=slim.l2_regularizer(weight_decay))
+                          regularizer=l2_regularizer(weight_decay))
     tf.add_to_collection(ATTENTION_WEIGHTS, a_i)
     tf.add_to_collection(ATTENTION_WEIGHTS, a_j)
 
     # dims: num_nodes x input_dim, input_dim, 1 -> num_nodes x 1
     att_i = tf.matmul(features, a_i)
-    att_i = tf.contrib.layers.bias_add(att_i)
+    att_i = bias_add(att_i, f"{name}-att_i")
     # dims: num_nodes x input_dim, input_dim, 1 -> num_nodes x 1
     att_j = tf.matmul(features, a_j)
-    att_j = tf.contrib.layers.bias_add(att_j)
+    att_j = bias_add(att_j, f"{name}-att_j")
 
     # Extracts the relevant attention coefficients with respect to the 1-hop neighbours of each node
     # Method: first extract all the attention coefficients of the left nodes of each edge, then those
@@ -84,7 +84,7 @@ def attention_head(inputs, output_dim, graph_adj, adj_with_self_loops_indices, a
             f"{name}-linear_transform_weights",
             [input_dim, output_dim], dtype=tf.float32,
             initializer=tf.glorot_uniform_initializer(),
-            regularizer=slim.l2_regularizer(weight_decay)
+            regularizer=l2_regularizer(weight_decay)
         )
         tf.add_to_collection(FILTER_WEIGHTS, linear_transform_weights)
 
@@ -108,7 +108,7 @@ def attention_head(inputs, output_dim, graph_adj, adj_with_self_loops_indices, a
         # normal feedforward layer to finish up
         # dims: num_nodes x num_nodes, num_nodes x output_dim -> num_nodes x output_dim
         output = tf.sparse_tensor_dense_matmul(attention_coefficients, transformed_features)
-        output = tf.contrib.layers.bias_add(output)
+        output = bias_add(output, name)
 
         if activation_fn is not None:
             output = activation_fn(output)
@@ -201,7 +201,7 @@ class GAT(GNNModel):
         adj_with_self_loops_coo = adj_with_self_loops.tocoo()
         # extract the coordinates of all the edges
         # since both row and column coordinates are ordered, row[0] corresponds to col[0] etc.
-        self.adj_with_self_loops_indices = np.mat([adj_with_self_loops_coo.row, adj_with_self_loops_coo.col])
+        self.adj_with_self_loops_indices = np.asmatrix([adj_with_self_loops_coo.row, adj_with_self_loops_coo.col])
         return adj_with_self_loops_tensor
 
     # override optimize method to employ alternating optimization

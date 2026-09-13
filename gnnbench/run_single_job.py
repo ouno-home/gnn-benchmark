@@ -5,9 +5,11 @@ import sys
 from collections import defaultdict
 
 import numpy as np
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
+
+tf.disable_v2_behavior()
 from sacred import Experiment
-from sacred.observers import MongoObserver
+from sacred.observers import SqlObserver
 
 import gnnbench.models
 from gnnbench.data.make_dataset import get_dataset_and_split_planetoid, get_dataset, get_train_val_test_split, \
@@ -25,7 +27,7 @@ def select_model(model_name):
 
 
 def run_single_split(experiment_name, model_name, dataset, num_training_runs, dataset_source, data_path, metrics,
-                     split_no, seed, train_config, model_config, db_host, db_port, target_db_name,
+                     split_no, seed, train_config, model_config, db_path,
                      gpu_id=None, log_verbose=True):
 
     # load the builder methods for the selected model
@@ -33,9 +35,7 @@ def run_single_split(experiment_name, model_name, dataset, num_training_runs, da
 
     # create the experiment...
     ex = get_experiment(experiment_name,
-                        db_host=db_host,
-                        db_port=db_port,
-                        db_name=target_db_name,
+                        db_path=db_path,
                         ingredients=[model_ingredient],
                         log_verbose=log_verbose)
 
@@ -143,24 +143,27 @@ def run_single_split(experiment_name, model_name, dataset, num_training_runs, da
         for name, values in test_metrics_collected.items():
             _log.debug(f"Mean test set {name} over {num_training_runs} runs for split {split_no}: "
                        f"{float(np.mean(values)):.4f}, stddev: {float(np.std(values)):.4f}")
-        return traces
+
+        # Store the traces in the run's info dict instead of returning them:
+        # the SqlObserver backend can only persist a scalar result, whereas info is
+        # stored as JSON and is read back by scripts/aggregate_results.py.
+        # Cast to plain floats so the info dict is JSON-serializable.
+        _run.info.update({name: [float(v) for v in values] for name, values in traces.items()})
+        return 0
 
     print(f"Running {experiment_name}...\n---")
     ex.run()
     print(f"Finished {experiment_name}.\n---")
 
 
-def get_experiment(name, db_host, db_port, db_name, ingredients=None, log_verbose=True):
+def get_experiment(name, db_path, ingredients=None, log_verbose=True):
 
     if ingredients is None:
         ex = Experiment(name)
     else:
         ex = Experiment(name, ingredients=ingredients)
 
-    ex.observers.append(MongoObserver.create(
-        url=f"mongodb://{db_host}:{db_port}",
-        db_name=db_name)
-    )
+    ex.observers.append(SqlObserver(f"sqlite:///{db_path}"))
     ex.logger = _get_logger(log_verbose)
     return ex
 
@@ -178,7 +181,12 @@ def _get_logger(verbose):
 if __name__ == '__main__':
     if len(sys.argv) > 1:
         # for being called from the multi-gpu script to run a single split on a single GPU
-        _gpu_id = sys.argv[1]
+        # the literal string "cpu" is passed to run the job on CPU instead
+        if sys.argv[1] == 'cpu':
+            _gpu_id = None
+            os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+        else:
+            _gpu_id = sys.argv[1]
         _log_verbose = int(sys.argv[2]) == 1
         _config = json.loads(sys.argv[3])
         _config['log_verbose'] = _log_verbose
